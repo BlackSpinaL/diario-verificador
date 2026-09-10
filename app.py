@@ -66,7 +66,9 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
             for idx, row in df.iterrows():
                 for col in colunas_selecionadas:
                     if col in df.columns:
-                        if row[col] == "" or pd.isna(row[col]):
+                        valor = str(row[col]).strip()
+                        # Considerar vazio, NaN, 0 ou 00 como pendência
+                        if valor == "" or valor == "0" or valor == "00" or pd.isna(row[col]):
                             turma_resultados.append({
                                 "Matrícula": row.get("MATRICULA", ""),
                                 "Nome": row.get("NOME DO ALUNO", ""),
