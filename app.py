@@ -12,6 +12,10 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
+# Colunas padrão que queremos verificar
+colunas_padrao = ["AP1/AV1", "AP2/AV2", "TE", "AE", "ND", "TOTAL PARCIAL", "FINAL"]
+
+# Dicionário de equivalências para padronizar cabeçalhos
 mapa_colunas = {
     "MATRÍCULA": "MATRICULA",
     "MATRICULA": "MATRICULA",
@@ -30,20 +34,12 @@ mapa_colunas = {
     "FINAL": "FINAL"
 }
 
-colunas_disponiveis = set()
+colunas_selecionadas = st.multiselect(
+    "Selecione as colunas para verificar:",
+    colunas_padrao  # sempre mostra só as colunas de notas
+)
 
-if uploaded_files:
-    for file in uploaded_files:
-        tables = camelot.read_pdf(file, pages="1")
-        for t in tables:
-            df = t.df
-            df.columns = df.iloc[0]
-            df = df.drop(0)
-            df.columns = [mapa_colunas.get(col.strip().upper(), col.strip().upper()) for col in df.columns]
-            colunas_disponiveis.update(df.columns)
-
-colunas_selecionadas = st.multiselect("Selecione as colunas para verificar:", sorted(colunas_disponiveis))
-
+# Botão para rodar a verificação
 if st.button("▶️ Rodar verificação") and uploaded_files and colunas_selecionadas:
     resultados_por_turma = {}
 
@@ -51,6 +47,7 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
         turma_resultados = []
         professor_nome = "Professor não identificado"
 
+        # Extrair cabeçalho da primeira página para tentar capturar o nome do professor
         header_tables = camelot.read_pdf(file, pages="1")
         for ht in header_tables:
             texto_cabecalho = " ".join(ht.df.values.flatten())
