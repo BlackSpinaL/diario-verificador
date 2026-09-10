@@ -48,7 +48,7 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
         professor_nome = "Professor não identificado"
 
         # Extrair cabeçalho da primeira página para tentar capturar o nome do professor
-        header_tables = camelot.read_pdf(file, pages="1")
+        header_tables = camelot.read_pdf(file, pages="1", flavor="stream", strip_text="\n")
         for ht in header_tables:
             texto_cabecalho = " ".join(ht.df.values.flatten())
             match_prof = re.search(r'PROFESSOR\s+([A-Z\s]+)', texto_cabecalho, re.IGNORECASE)
@@ -56,7 +56,8 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
                 professor_nome = match_prof.group(1).title()
                 break
 
-        tables = camelot.read_pdf(file, pages="all")
+        # Ler todas as páginas com flavor="stream"
+        tables = camelot.read_pdf(file, pages="all", flavor="stream", strip_text="\n")
         for t in tables:
             df = t.df
             df.columns = df.iloc[0]
