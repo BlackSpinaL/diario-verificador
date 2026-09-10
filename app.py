@@ -10,21 +10,38 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-colunas = ["AP1/AV1", "AP2/AV2", "TE", "AE", "ND", "TOTAL PARCIAL", "FINAL"]
-colunas_selecionadas = st.multiselect("Selecione as colunas para verificar:", colunas)
+# Colunas padrão que queremos verificar
+colunas_padrao = ["MATRICULA", "NOME DO ALUNO", "AP1/AV1", "AP2/AV2", "TE", "AE", "ND", "TOTAL PARCIAL", "FINAL"]
+colunas_selecionadas = st.multiselect("Selecione as colunas para verificar:", colunas_padrao[2:])  # só notas
+
+# Dicionário de equivalências (ajuste automático)
+mapa_colunas = {
+    "MATRÍCULA": "MATRICULA",
+    "MATRICULA": "MATRICULA",
+    "NOME": "NOME DO ALUNO",
+    "NOME DO ALUNO": "NOME DO ALUNO",
+    "ALUNO": "NOME DO ALUNO",
+    "AV1/AP1": "AP1/AV1",
+    "AP1": "AP1/AV1",
+    "AS/AP2": "AP2/AV2",
+    "AP2": "AP2/AV2",
+    "TOTAL": "TOTAL PARCIAL",
+    "FINAL": "FINAL"
+}
 
 resultados = []
 
 if uploaded_files and colunas_selecionadas:
     for file in uploaded_files:
-        # Extrair tabelas do PDF com Camelot
         tables = camelot.read_pdf(file, pages="all")
 
         for t in tables:
-            df = t.df  # tabela extraída
-            # Ajustar cabeçalhos (Camelot lê tudo como texto)
-            df.columns = df.iloc[0]
+            df = t.df
+            df.columns = df.iloc[0]  # primeira linha como cabeçalho
             df = df.drop(0)
+
+            # Normalizar cabeçalhos
+            df.columns = [mapa_colunas.get(col.strip().upper(), col.strip().upper()) for col in df.columns]
 
             # Verificação de células vazias
             for idx, row in df.iterrows():
@@ -33,7 +50,7 @@ if uploaded_files and colunas_selecionadas:
                         if row[col] == "" or pd.isna(row[col]):
                             resultados.append({
                                 "Arquivo": file.name,
-                                "Matrícula": row.get("MATRÍCULA", ""),
+                                "Matrícula": row.get("MATRICULA", ""),
                                 "Nome": row.get("NOME DO ALUNO", ""),
                                 "Coluna faltando": col
                             })
