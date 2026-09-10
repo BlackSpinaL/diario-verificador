@@ -85,14 +85,19 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
     for file in uploaded_files:
         turma_resultados = []
         professor_nome = "Professor não identificado"
+        disciplina_nome = "Disciplina não identificada"
 
-        # Nome do professor: procurar em todas as tabelas da página 1
+        # Nome do professor e disciplina: procurar em todas as tabelas da página 1
         header_tables = camelot.read_pdf(file, pages="1", flavor="stream", strip_text="\n")
         for ht in header_tables:
             texto_cabecalho = " ".join(ht.df.astype(str).values.flatten())
-            match_prof = re.search(r'PROFESSOR\s+([A-Z\s]+)', texto_cabecalho, re.IGNORECASE)
+            match_prof = re.search(r'PROFESSOR\s+([A-Z\s]+?)\s{3,}', texto_cabecalho, re.IGNORECASE)
             if match_prof:
                 professor_nome = match_prof.group(1).title()
+            match_disc = re.search(r'DISCIPLINA\s+(.+?)\s+MESES', texto_cabecalho, re.IGNORECASE)
+            if match_disc:
+                disciplina_nome = match_disc.group(1).strip().title()
+            if match_prof and match_disc:
                 break
 
         tables = camelot.read_pdf(file, pages="all", flavor="stream", strip_text="\n")
@@ -117,6 +122,7 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
                         turma_resultados.append({
                             "Matrícula": row.get("MATRICULA", ""),
                             "Nome": row.get("NOME DO ALUNO", ""),
+                            "Disciplina": disciplina_nome,
                             "Coluna faltando": col
                         })
 
@@ -125,13 +131,14 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
             turma_codigo = match.group(1) if match else file.name[:30]
             resultados_por_turma[turma_codigo] = {
                 "professor": professor_nome,
+                "disciplina": disciplina_nome,
                 "df": pd.DataFrame(turma_resultados)
             }
 
     if resultados_por_turma:
         st.warning("⚠️ Foram encontradas pendências!")
         for turma, dados in resultados_por_turma.items():
-            st.subheader(f"📘 Turma: {turma} — {dados['professor']}")
+            st.subheader(f"📘 Turma: {turma} — {dados['disciplina']} — {dados['professor']}")
             st.dataframe(dados["df"])
 
         output_excel = BytesIO()
@@ -158,7 +165,10 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
         styles = getSampleStyleSheet()
 
         for turma, dados in resultados_por_turma.items():
-            elements.append(Paragraph(f"📘 Turma: {turma} — {dados['professor']}", styles['Heading2']))
+            elements.append(Paragraph(
+                f"📘 Turma: {turma} — {dados['disciplina']} — {dados['professor']}",
+                styles['Heading2']
+            ))
             data = [dados["df"].columns.tolist()] + dados["df"].values.tolist()
             table = Table(data)
             table.setStyle(TableStyle([
