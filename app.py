@@ -73,7 +73,7 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
                             numero = None
 
                         # Considerar vazio, NaN ou qualquer valor numérico igual a zero como pendência
-                        if valor == "" or pd.isna(row[col]) or numero == 0.0:
+                        if valor in ["", "0", "00", "0.0", "0,0"] or pd.isna(row[col]) or numero == 0.0:
                             turma_resultados.append({
                                 "Matrícula": row.get("MATRICULA", ""),
                                 "Nome": row.get("NOME DO ALUNO", ""),
@@ -141,4 +141,4 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
             mime="application/pdf"
         )
     else:
-        st.success("✅ Todos os diários estão completos nas colunas selecionadas!")
+        st.success("✅ Todos os diários estão completos nas colunas selecionadas!"
