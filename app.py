@@ -1,5 +1,5 @@
 import streamlit as st
-import camelot
+import pdfplumber
 import pandas as pd
 from io import BytesIO
 import re
@@ -36,7 +36,7 @@ mapa_colunas = {
 
 colunas_selecionadas = st.multiselect(
     "Selecione as colunas para verificar:",
-    colunas_padrao  # sempre mostra só as colunas de notas
+    colunas_padrao
 )
 
 # Botão para rodar a verificação
@@ -46,40 +46,87 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
     for file in uploaded_files:
         turma_resultados = []
         professor_nome = "Professor não identificado"
+        
+        # Usando pdfplumber para extrair as tabelas
+        with pdfplumber.open(file) as pdf:
+            for page in pdf.pages:
+                # Extrai a tabela da página
+                table = page.extract_table()
+                
+                if not table:
+                    continue
+                
+                # A primeira linha geralmente é o cabeçalho
+                # Vamos tentar encontrar a linha que contém "MATRICULA" ou "NOME"
+                header_index = -1
+                for i, row in enumerate(table):
+                    row_str = " ".join([str(cell) for cell in row if cell])
+                    if "MATRICULA" in row_str.upper() or "NOME" in row_str.upper():
+                        header_index = i
+                        break
+                
+                if header_index == -1:
+                    continue # Pula se não achar o cabeçalho
+                
+                # Pega o cabeçalho e limpa
+                raw_header = table[header_index]
+                clean_header = []
+                for col in raw_header:
+                    if col:
+                        # Remove quebras de linha e espaços extras
+                        c = str(col).replace("\n", " ").strip().upper()
+                        # Aplica o mapa de colunas
+                        c_mapped = mapa_colunas.get(c, c)
+                        clean_header.append(c_mapped)
+                    else:
+                        clean_header.append("VAZIO")
+                
+                # Pega os dados a partir da linha seguinte ao cabeçalho
+                data_rows = table[header_index + 1:]
+                
+                # Cria o DataFrame
+                df = pd.DataFrame(data_rows, columns=clean_header)
+                
+                # Substitui strings vazias ou None por NaN para facilitar
+                df = df.replace(["", "None", "none", "nan"], pd.NA)
+                
+                # Tenta capturar o nome do professor no texto da página
+                texto_pagina = page.extract_text()
+                if texto_pagina:
+                    match_prof = re.search(r'PROFESSOR\s+([A-Z\s]+)', texto_pagina, re.IGNORECASE)
+                    if match_prof and professor_nome == "Professor não identificado":
+                        professor_nome = match_prof.group(1).strip().title()
 
-        # Extrair cabeçalho da primeira página para tentar capturar o nome do professor
-        header_tables = camelot.read_pdf(file, pages="1", flavor="stream", strip_text="\n")
-        for ht in header_tables:
-            texto_cabecalho = " ".join(ht.df.values.flatten())
-            match_prof = re.search(r'PROFESSOR\s+([A-Z\s]+)', texto_cabecalho, re.IGNORECASE)
-            if match_prof:
-                professor_nome = match_prof.group(1).title()
-                break
+                # Itera sobre as linhas do DataFrame
+                for idx, row in df.iterrows():
+                    # Verifica se a linha é válida (tem matrícula ou nome)
+                    matricula = str(row.get("MATRICULA", "")).strip()
+                    nome = str(row.get("NOME DO ALUNO", "")).strip()
+                    
+                    if not matricula or not nome or matricula == "None":
+                        continue
 
-        # Ler todas as páginas com flavor="stream"
-        tables = camelot.read_pdf(file, pages="all", flavor="stream", strip_text="\n")
-        for t in tables:
-            df = t.df
-            df.columns = df.iloc[0]
-            df = df.drop(0)
-            df.columns = [mapa_colunas.get(col.strip().upper(), col.strip().upper()) for col in df.columns]
+                    # Verifica as colunas selecionadas
+                    for col in colunas_selecionadas:
+                        if col in df.columns:
+                            valor_bruto = row[col]
+                            
+                            # Limpeza do valor: remove espaços, converte vírgula para ponto
+                            valor_str = str(valor_bruto).strip().replace(",", ".").replace(" ", "")
+                            
+                            try:
+                                numero = float(valor_str)
+                            except (ValueError, TypeError):
+                                numero = None
 
-            for idx, row in df.iterrows():
-                for col in colunas_selecionadas:
-                    if col in df.columns:
-                        valor = str(row[col]).strip().replace(",", ".")
-                        try:
-                            numero = float(valor)
-                        except ValueError:
-                            numero = None
-
-                        # Considerar vazio, NaN ou qualquer valor numérico igual a zero como pendência
-                        if valor in ["", "0", "00", "0.0", "0,0"] or pd.isna(row[col]) or numero == 0.0:
-                            turma_resultados.append({
-                                "Matrícula": row.get("MATRICULA", ""),
-                                "Nome": row.get("NOME DO ALUNO", ""),
-                                "Coluna faltando": col
-                            })
+                            # Considerar vazio, NaN ou zero como pendência
+                            # Adicionado "00.00" e "0.00" na lista
+                            if valor_str in ["", "0", "00", "0.0", "0.00", "00.00", "nan", "<NA>"] or pd.isna(valor_bruto) or (numero is not None and numero == 0.0):
+                                turma_resultados.append({
+                                    "Matrícula": matricula,
+                                    "Nome": nome,
+                                    "Coluna faltando": col
+                                })
 
         if turma_resultados:
             match = re.search(r'(\d{5})', file.name)
@@ -99,6 +146,7 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
         output_excel = BytesIO()
         with pd.ExcelWriter(output_excel, engine="openpyxl") as writer:
             for turma, dados in resultados_por_turma.items():
+                # Limita o nome da aba a 31 caracteres (limite do Excel)
                 sheet_name = f"{turma}_{dados['professor'][:15]}"
                 dados["df"].to_excel(writer, sheet_name=sheet_name[:31], index=False)
 
@@ -122,13 +170,18 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
 
         for turma, dados in resultados_por_turma.items():
             elements.append(Paragraph(f"📘 Turma: {turma} — {dados['professor']}", styles['Heading2']))
+            
+            # Converte o DataFrame para uma lista de listas para o ReportLab
             data = [dados["df"].columns.tolist()] + dados["df"].values.tolist()
+            
+            # Cria a tabela com estilo
             table = Table(data)
             table.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.grey),
                 ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
                 ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.black)
+                ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                ('FONTSIZE', (0,0), (-1,-1), 8) # Reduz a fonte para caber melhor
             ]))
             elements.append(table)
             elements.append(Spacer(1, 20))
