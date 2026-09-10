@@ -1,5 +1,5 @@
 import streamlit as st
-import pdfplumber
+import camelot
 import pandas as pd
 from io import BytesIO
 import re
@@ -12,121 +12,113 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-# Colunas padrão que queremos verificar
+# Colunas padrão que queremos verificar (nesta ordem, sempre as 7 últimas
+# colunas da tabela principal de notas do diário)
 colunas_padrao = ["AP1/AV1", "AP2/AV2", "TE", "AE", "ND", "TOTAL PARCIAL", "FINAL"]
-
-# Dicionário de equivalências para padronizar cabeçalhos
-mapa_colunas = {
-    "MATRÍCULA": "MATRICULA",
-    "MATRICULA": "MATRICULA",
-    "NOME": "NOME DO ALUNO",
-    "NOME DO ALUNO": "NOME DO ALUNO",
-    "ALUNO": "NOME DO ALUNO",
-    "AV1/AP1": "AP1/AV1",
-    "AP1": "AP1/AV1",
-    "AS/AP2": "AP2/AV2",
-    "AP2": "AP2/AV2",
-    "TE": "TE",
-    "AE": "AE",
-    "ND": "ND",
-    "TOTAL": "TOTAL PARCIAL",
-    "TOTAL PARCIAL": "TOTAL PARCIAL",
-    "FINAL": "FINAL"
-}
 
 colunas_selecionadas = st.multiselect(
     "Selecione as colunas para verificar:",
     colunas_padrao
 )
 
-# Botão para rodar a verificação
+
+def extrair_tabela_notas(df_bruto):
+    """
+    Recebe um DataFrame cru extraído pelo camelot (flavor='stream') e devolve
+    um DataFrame já limpo com colunas MATRICULA, NOME DO ALUNO + colunas_padrao,
+    contendo só as linhas de alunos.
+
+    IMPORTANTE: no PDF do diário (Colégio Tiradentes - PMMG), o cabeçalho da
+    tabela de notas é multi-linha e o camelot (flavor=stream) o quebra em
+    várias linhas diferentes do DataFrame - nunca fica tudo alinhado numa
+    única linha 0. Por isso, usar `df.columns = df.iloc[0]` (como no código
+    original) pega uma linha de cabeçalho "errada" (normalmente um fragmento
+    do topo da página), e nenhuma das colunas de notas (AP1/AV1, TOTAL
+    PARCIAL, FINAL etc.) é encontrada depois. Resultado: a checagem
+    "if col in df.columns" nunca é verdadeira para NINGUÉM, e o app relata
+    "tudo completo" mesmo quando faltam notas (como a da aluna Vitória).
+
+    A extração abaixo NÃO depende do texto do cabeçalho. Em vez disso:
+      - identifica as linhas de alunos pela numeração sequencial (001, 002...)
+        que sempre aparece na 1ª coluna;
+      - usa a POSIÇÃO fixa das colunas: coluna 1 = matrícula, coluna 2 = nome,
+        e as 7 ÚLTIMAS colunas da tabela = AP1/AV1, AP2/AV2, TE, AE, ND,
+        TOTAL PARCIAL, FINAL (nessa ordem), que é o layout fixo do diário.
+    """
+    linhas_alunos = []
+    for _, row in df_bruto.iterrows():
+        primeira_celula = str(row.iloc[0]).strip()
+        if re.match(r'^\d{3}$', primeira_celula):  # ex.: 001, 002, ...
+            linhas_alunos.append(row)
+
+    if not linhas_alunos:
+        return None  # não é a tabela principal de notas
+
+    n_cols = df_bruto.shape[1]
+    if n_cols < 9:  # não tem colunas suficientes p/ conter as 7 notas + matricula + nome
+        return None
+
+    registros = []
+    for row in linhas_alunos:
+        matricula = str(row.iloc[1]).strip()
+        nome = str(row.iloc[2]).strip()
+        notas = row.iloc[n_cols - 7:n_cols].tolist()  # 7 últimas colunas
+        registro = {"MATRICULA": matricula, "NOME DO ALUNO": nome}
+        for nome_coluna, valor in zip(colunas_padrao, notas):
+            registro[nome_coluna] = valor
+        registros.append(registro)
+
+    return pd.DataFrame(registros)
+
+
+def eh_tabela_de_notas(df_bruto):
+    """Confirma que a tabela extraída é a tabela principal de notas
+    (e não, por ex., a tabela de faltas por etapa da página 2),
+    procurando o texto 'AV1/AP1' em qualquer célula."""
+    texto = " ".join(df_bruto.astype(str).values.flatten()).upper()
+    return "AV1/AP1" in texto or "AP1/AV1" in texto
+
+
 if st.button("▶️ Rodar verificação") and uploaded_files and colunas_selecionadas:
     resultados_por_turma = {}
 
     for file in uploaded_files:
         turma_resultados = []
         professor_nome = "Professor não identificado"
-        
-        # Usando pdfplumber para extrair as tabelas
-        with pdfplumber.open(file) as pdf:
-            for page in pdf.pages:
-                # Extrai a tabela da página
-                table = page.extract_table()
-                
-                if not table:
-                    continue
-                
-                # A primeira linha geralmente é o cabeçalho
-                # Vamos tentar encontrar a linha que contém "MATRICULA" ou "NOME"
-                header_index = -1
-                for i, row in enumerate(table):
-                    row_str = " ".join([str(cell) for cell in row if cell])
-                    if "MATRICULA" in row_str.upper() or "NOME" in row_str.upper():
-                        header_index = i
-                        break
-                
-                if header_index == -1:
-                    continue # Pula se não achar o cabeçalho
-                
-                # Pega o cabeçalho e limpa
-                raw_header = table[header_index]
-                clean_header = []
-                for col in raw_header:
-                    if col:
-                        # Remove quebras de linha e espaços extras
-                        c = str(col).replace("\n", " ").strip().upper()
-                        # Aplica o mapa de colunas
-                        c_mapped = mapa_colunas.get(c, c)
-                        clean_header.append(c_mapped)
-                    else:
-                        clean_header.append("VAZIO")
-                
-                # Pega os dados a partir da linha seguinte ao cabeçalho
-                data_rows = table[header_index + 1:]
-                
-                # Cria o DataFrame
-                df = pd.DataFrame(data_rows, columns=clean_header)
-                
-                # Substitui strings vazias ou None por NaN para facilitar
-                df = df.replace(["", "None", "none", "nan"], pd.NA)
-                
-                # Tenta capturar o nome do professor no texto da página
-                texto_pagina = page.extract_text()
-                if texto_pagina:
-                    match_prof = re.search(r'PROFESSOR\s+([A-Z\s]+)', texto_pagina, re.IGNORECASE)
-                    if match_prof and professor_nome == "Professor não identificado":
-                        professor_nome = match_prof.group(1).strip().title()
 
-                # Itera sobre as linhas do DataFrame
-                for idx, row in df.iterrows():
-                    # Verifica se a linha é válida (tem matrícula ou nome)
-                    matricula = str(row.get("MATRICULA", "")).strip()
-                    nome = str(row.get("NOME DO ALUNO", "")).strip()
-                    
-                    if not matricula or not nome or matricula == "None":
-                        continue
+        # Nome do professor: procurar em todas as tabelas da página 1
+        header_tables = camelot.read_pdf(file, pages="1", flavor="stream", strip_text="\n")
+        for ht in header_tables:
+            texto_cabecalho = " ".join(ht.df.astype(str).values.flatten())
+            match_prof = re.search(r'PROFESSOR\s+([A-Z\s]+)', texto_cabecalho, re.IGNORECASE)
+            if match_prof:
+                professor_nome = match_prof.group(1).title()
+                break
 
-                    # Verifica as colunas selecionadas
-                    for col in colunas_selecionadas:
-                        if col in df.columns:
-                            valor_bruto = row[col]
-                            
-                            # Limpeza do valor: remove espaços, converte vírgula para ponto
-                            valor_str = str(valor_bruto).strip().replace(",", ".").replace(" ", "")
-                            
-                            try:
-                                numero = float(valor_str)
-                            except (ValueError, TypeError):
-                                numero = None
+        tables = camelot.read_pdf(file, pages="all", flavor="stream", strip_text="\n")
+        for t in tables:
+            df_bruto = t.df
+            if not eh_tabela_de_notas(df_bruto):
+                continue  # pula tabelas que não são a tabela principal de notas
 
-                            # Considerar vazio, NaN ou zero como pendência
-                            # Adicionado "00.00" e "0.00" na lista
-                            if valor_str in ["", "0", "00", "0.0", "0.00", "00.00", "nan", "<NA>"] or pd.isna(valor_bruto) or (numero is not None and numero == 0.0):
-                                turma_resultados.append({
-                                    "Matrícula": matricula,
-                                    "Nome": nome,
-                                    "Coluna faltando": col
-                                })
+            df = extrair_tabela_notas(df_bruto)
+            if df is None:
+                continue
+
+            for _, row in df.iterrows():
+                for col in colunas_selecionadas:
+                    valor = str(row[col]).strip().replace(",", ".")
+                    try:
+                        numero = float(valor)
+                    except ValueError:
+                        numero = None
+
+                    if valor in ["", "0", "00", "0.0", "0,0"] or pd.isna(row[col]) or numero == 0.0:
+                        turma_resultados.append({
+                            "Matrícula": row.get("MATRICULA", ""),
+                            "Nome": row.get("NOME DO ALUNO", ""),
+                            "Coluna faltando": col
+                        })
 
         if turma_resultados:
             match = re.search(r'(\d{5})', file.name)
@@ -142,11 +134,9 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
             st.subheader(f"📘 Turma: {turma} — {dados['professor']}")
             st.dataframe(dados["df"])
 
-        # Excel com abas por turma
         output_excel = BytesIO()
         with pd.ExcelWriter(output_excel, engine="openpyxl") as writer:
             for turma, dados in resultados_por_turma.items():
-                # Limita o nome da aba a 31 caracteres (limite do Excel)
                 sheet_name = f"{turma}_{dados['professor'][:15]}"
                 dados["df"].to_excel(writer, sheet_name=sheet_name[:31], index=False)
 
@@ -157,7 +147,6 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        # PDF com páginas por turma
         from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
@@ -170,18 +159,13 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
 
         for turma, dados in resultados_por_turma.items():
             elements.append(Paragraph(f"📘 Turma: {turma} — {dados['professor']}", styles['Heading2']))
-            
-            # Converte o DataFrame para uma lista de listas para o ReportLab
             data = [dados["df"].columns.tolist()] + dados["df"].values.tolist()
-            
-            # Cria a tabela com estilo
             table = Table(data)
             table.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.grey),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-                ('FONTSIZE', (0,0), (-1,-1), 8) # Reduz a fonte para caber melhor
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black)
             ]))
             elements.append(table)
             elements.append(Spacer(1, 20))
