@@ -141,4 +141,4 @@ if st.button("▶️ Rodar verificação") and uploaded_files and colunas_seleci
             mime="application/pdf"
         )
     else:
-        st.success("✅ Todos os diários estão completos nas colunas selecionadas!")
+        st.success("✅ Todos os diários estão completos nas colunas selecionadas!"
